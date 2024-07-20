@@ -1,0 +1,140 @@
+#define BLYNK_PRINT Serial
+
+#include "EmonLib.h"             // For energy monitoring
+#include <WiFi.h>                // For WiFi connection
+#include <WiFiClient.h>          // For WiFi client
+#include <BlynkSimpleEsp32.h>    // For Blynk integration
+#include <TinyGPS++.h>           // For GPS data handling
+#include <SoftwareSerial.h>      // For serial communication with GPS
+
+// Create instances
+EnergyMonitor emon;             // For energy monitoring
+TinyGPSPlus gps;                // For GPS data
+SoftwareSerial ss(16, 17);      // RX, TX pins for GPS module
+
+// Calibration values
+#define vCalibration 106.8
+#define currCalibration 0.52
+
+// Blynk Timer
+BlynkTimer timer;
+
+// Blynk authentication token
+char auth[] = "YOUR_BLYNK_AUTH_TOKEN";
+
+// WiFi credentials
+char ssid[] = "YOUR_WIFI_SSID";
+char pass[] = "YOUR_WIFI_PASSWORD";
+
+// Variables for energy data
+float kWh = 0;
+unsigned long lastmillis = millis();
+
+// Variables for GPS data
+float totalDistance = 0.0;
+float lastLatitude = 0.0;
+float lastLongitude = 0.0;
+
+// Function to calculate distance between two coordinates
+float calculateDistance(float lat1, float lon1, float lat2, float lon2) {
+    float R = 6371; // Radius of the Earth in kilometers
+    float dLat = (lat2 - lat1) * PI / 180.0;
+    float dLon = (lon2 - lon1) * PI / 180.0;
+    float a = sin(dLat / 2) * sin(dLat / 2) +
+              cos(lat1 * PI / 180.0) * cos(lat2 * PI / 180.0) *
+              sin(dLon / 2) * sin(dLon / 2);
+    float c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    float distance = R * c;
+    return distance;
+}
+
+// Function to read and send data to Blynk
+void myTimerEvent() {
+    // Calculate voltage and current
+    emon.calcVI(20, 2000); 
+
+    // Print and send voltage data
+    Serial.print("Vrms: ");
+    Serial.print(emon.Vrms, 2);
+    Serial.print(" V");
+    Blynk.virtualWrite(V0, emon.Vrms);
+
+    // Print and send current data
+    Serial.print("\tIrms: ");
+    Serial.print(emon.Irms, 4);
+    Serial.print(" A");
+    Blynk.virtualWrite(V1, emon.Irms);
+
+    // Print and send power data
+    Serial.print("\tPower: ");
+    Serial.print(emon.apparentPower, 4);
+    Serial.print(" W");
+    Blynk.virtualWrite(V2, emon.apparentPower);
+
+    // Calculate and send energy consumption data
+    Serial.print("\tkWh: ");
+    kWh += emon.apparentPower * (millis() - lastmillis) / 3600000.0; // Convert ms to hours
+    Serial.print(kWh, 4);
+    Serial.println(" kWh");
+    lastmillis = millis();
+    Blynk.virtualWrite(V3, kWh);
+
+    // Read GPS data
+    while (ss.available() > 0) {
+        gps.encode(ss.read());
+    }
+
+    // If GPS data is available
+    if (gps.location.isUpdated()) {
+        float latitude = gps.location.lat();
+        float longitude = gps.location.lng();
+
+        // Calculate distance traveled
+        if (lastLatitude != 0.0 && lastLongitude != 0.0) {
+            totalDistance += calculateDistance(lastLatitude, lastLongitude, latitude, longitude);
+        }
+
+        lastLatitude = latitude;
+        lastLongitude = longitude;
+
+        // Print and send GPS data
+        Serial.print("\tLatitude: ");
+        Serial.print(latitude, 6);
+        Serial.print("\tLongitude: ");
+        Serial.print(longitude, 6);
+        Serial.print("\tDistance: ");
+        Serial.print(totalDistance, 4);
+        Serial.println(" km");
+
+        Blynk.virtualWrite(V4, latitude);
+        Blynk.virtualWrite(V5, longitude);
+        Blynk.virtualWrite(V6, totalDistance);
+
+        // Update Map widget with the current location
+        Blynk.virtualWrite(V7, latitude, longitude, "Location");
+    }
+}
+
+void setup() {
+    // Initialize serial communication
+    Serial.begin(9600);
+
+    // Initialize voltage and current sensors
+    emon.voltage(35, vCalibration, 1.7); // Voltage: input pin, calibration, phase_shift
+    emon.current(34, currCalibration);   // Current: input pin, calibration
+
+    // Initialize Blynk
+    Blynk.begin(auth, ssid, pass);
+
+    // Initialize GPS module
+    ss.begin(9600);
+
+    // Set timer to call myTimerEvent function every 5 seconds
+    timer.setInterval(5000L, myTimerEvent);
+}
+
+void loop() {
+    // Run Blynk and timer
+    Blynk.run();
+    timer.run();
+}
